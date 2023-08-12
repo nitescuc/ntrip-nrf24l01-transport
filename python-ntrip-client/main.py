@@ -31,34 +31,38 @@ if __name__ == "__main__":
         print("Not connected to Raspberry Pi ... goodbye.")
         sys.exit()
 
-    ntrip_client = NTRIPClient(NTRIP_HOST, NTRIP_PORT, NTRIP_MOUNTPOINT, NTRIP_USERNAME, NTRIP_PASSWORD)
+    ntrip_client = NTRIPClient(NTRIP_HOST, NTRIP_PORT, NTRIP_MOUNTPOINT, None, NTRIP_USERNAME, NTRIP_PASSWORD)
     if not ntrip_client.connect():
         print("Not connected to NTRIP server ... goodbye.")
         sys.exit()
 
     # Create NRF24 object.
     # PLEASE NOTE: PA level is set to MIN, because test sender/receivers are often close to each other, and then MIN works better.
-    nrf = NRF24(pi, ce=25, payload_size=RF24_PAYLOAD.DYNAMIC, channel=100, data_rate=RF24_DATA_RATE.RATE_250KBPS, pa_level=RF24_PA.MAX)
+    nrf = NRF24(pi, ce=25, payload_size=RF24_PAYLOAD.DYNAMIC, channel=100, data_rate=RF24_DATA_RATE.RATE_250KBPS, pa_level=RF24_PA.HIGH)
     nrf.set_address_bytes(len(address))
     nrf.open_writing_pipe(address)
     
     # Display the content of NRF24L01 device registers.
-    # nrf.show_registers()
+    nrf.show_registers()
 
     try:
-        print(f'Send to {address}')
+        print(f'Send to NRF24 {address}')
         count = 0
         while True:
             for raw_rtcm in ntrip_client.recv_rtcm():
-                nrf.reset_packages_lost()
-                nrf.send(raw_rtcm)
-                try:
-                    nrf.wait_until_sent()
-                except TimeoutError:
-                    print('Timeout waiting for transmission to complete.')
-                    # Wait 10 seconds before sending the next reading.
-                    time.sleep(10)
-                    continue
+                # each raw_rtcm is a bytes object containing a single RTCM message
+                # print(f'Got RTCM message {raw_rtcm}')
+                for i in range(0, len(raw_rtcm), 32):
+                    # print(f'Sending {raw_rtcm[i:i+32]}')
+                    nrf.reset_packages_lost()
+                    nrf.send(raw_rtcm[i:i+32])
+                    try:
+                        nrf.wait_until_sent()
+                    except TimeoutError:
+                        print('Timeout waiting for transmission to complete.')
+                        # Wait 10 seconds before sending the next reading.
+                        time.sleep(10)
+                        continue
     except:
         traceback.print_exc()
         nrf.power_down()

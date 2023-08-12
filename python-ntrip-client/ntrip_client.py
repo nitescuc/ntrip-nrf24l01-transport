@@ -7,7 +7,10 @@ import socket
 import select
 import logging
 
-_CHUNK_SIZE = 32
+from nmea_parser import NMEAParser
+from rtcm_parser import RTCMParser
+
+_CHUNK_SIZE = 1024
 _SOURCETABLE_RESPONSES = [
   'SOURCETABLE 200 OK'
 ]
@@ -48,6 +51,20 @@ class NTRIPClient:
     # Initialize this so we don't throw an exception when closing
     self._raw_socket = None
     self._server_socket = None
+
+    # Setup some parsers to parse incoming messages
+    self.rtcm_parser = RTCMParser(
+      logerr=logerr,
+      logwarn=logwarn,
+      loginfo=loginfo,
+      logdebug=logdebug
+    )
+    self.nmea_parser = NMEAParser(
+      logerr=logerr,
+      logwarn=logwarn,
+      loginfo=loginfo,
+      logdebug=logdebug
+    )
 
     # Public SSL configuration
     self.ssl = False
@@ -112,7 +129,7 @@ class NTRIPClient:
     # Get the response from the server
     response = ''
     try:
-      response = self._server_socket.recv(1024).decode('utf-8')
+      response = self._server_socket.recv(_CHUNK_SIZE).decode('utf-8')
     except Exception as e:
       self._logerr(
         'Unable to read response from server at http://{}:{}'.format(self._host, self._port))
@@ -187,6 +204,35 @@ class NTRIPClient:
     else:
       self._logdebug('Reconnect called while still connected, ignoring')
 
+  def send_nmea(self, sentence):
+    if not self._connected:
+      self._logwarn('NMEA sent before client was connected, discarding NMEA')
+      return
+
+    # Not sure if this is the right thing to do, but python will escape the return characters at the end of the string, so do this manually
+    if sentence[-4:] == '\\r\\n':
+      sentence = sentence[:-4] + '\r\n'
+    elif sentence[-2:] != '\r\n':
+      sentence = sentence + '\r\n'
+
+    # Check if it is a valid NMEA sentence
+    if not self.nmea_parser.is_valid_sentence(sentence):
+      self._logwarn("Invalid NMEA sentence, not sending to server")
+      return
+
+    # Encode the data and send it to the socket
+    try:
+      self._server_socket.send(sentence.encode('utf-8'))
+    except Exception as e:
+      self._logwarn('Unable to send NMEA sentence to server.')
+      self._logwarn('Exception: {}'.format(str(e)))
+      self._nmea_send_failed_count += 1
+      if self._nmea_send_failed_count >= self._nmea_send_failed_max:
+        self._logwarn("NMEA sentence failed to send to server {} times, restarting".format(self._nmea_send_failed_count))
+        self.reconnect()
+        self._nmea_send_failed_count = 0
+        self.send_nmea(sentence)  # Try sending the NMEA sentence again
+
 
   def recv_rtcm(self):
     if not self._connected:
@@ -207,22 +253,11 @@ class NTRIPClient:
 
     # Since we only ever pass the server socket to the list of read sockets, we can just read from that
     # Read all available data into a buffer
+    data = b''
     while True:
       try:
         chunk = self._server_socket.recv(_CHUNK_SIZE)
-        # If 0 bytes were read from the socket even though we were told data is available multiple times,
-        # it can be safely assumed that we can reconnect as the server has closed the connection
-        if len(chunk) == 0:
-          self._read_zero_bytes_count += 1
-          if self._read_zero_bytes_count >= self._read_zero_bytes_max:
-            self._logwarn('Reconnecting because we received 0 bytes from the socket even though it said there was data available {} times'.format(self._read_zero_bytes_count))
-            self.reconnect()
-            self._read_zero_bytes_count = 0
-        else:
-          # Looks like we received valid data, so note when the data was received
-          self._recv_rtcm_last_packet_timestamp = time.time()
-          self._first_rtcm_received = True
-        yield b'' + chunk
+        data += chunk
         if len(chunk) < _CHUNK_SIZE:
           break
       except Exception as e:
@@ -230,9 +265,26 @@ class NTRIPClient:
         if not self._socket_is_open():
           self._logerr('Socket appears to be closed. Reconnecting')
           self.reconnect()
-        else:
-          self._logerr('Exception: {}'.format(e))
-          raise e
+          return []
+        break
+    self._logdebug('Read {} bytes'.format(len(data)))
+
+    # If 0 bytes were read from the socket even though we were told data is available multiple times,
+    # it can be safely assumed that we can reconnect as the server has closed the connection
+    if len(data) == 0:
+      self._read_zero_bytes_count += 1
+      if self._read_zero_bytes_count >= self._read_zero_bytes_max:
+        self._logwarn('Reconnecting because we received 0 bytes from the socket even though it said there was data available {} times'.format(self._read_zero_bytes_count))
+        self.reconnect()
+        self._read_zero_bytes_count = 0
+        return []
+    else:
+      # Looks like we received valid data, so note when the data was received
+      self._recv_rtcm_last_packet_timestamp = time.time()
+      self._first_rtcm_received = True
+
+    # Send the data to the RTCM parser to parse it
+    return self.rtcm_parser.parse(data) if data else []
 
   def shutdown(self):
     # Set some state, and then disconnect
@@ -270,4 +322,3 @@ class NTRIPClient:
       self._logwarn('Exception: {}'.format(e))
       return False
     return True
-  
