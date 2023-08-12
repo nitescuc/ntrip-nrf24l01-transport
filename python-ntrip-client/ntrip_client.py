@@ -241,15 +241,17 @@ class NTRIPClient:
       return []
     
     # If it has been too long since we received an RTCM packet, reconnect
-    if time.time() - self.rtcm_timeout_seconds >= self._recv_rtcm_last_packet_timestamp and self._first_rtcm_received:
+    # if time.time() - self.rtcm_timeout_seconds >= self._recv_rtcm_last_packet_timestamp and self._first_rtcm_received:
+    #   self._logerr('RTCM data not received for {} seconds, reconnecting'.format(self.rtcm_timeout_seconds))
+    #   self.reconnect()
+    #   self._first_rtcm_received = False
+
+    # Check if there is any data available on the socket
+    read_sockets, _, _ = select.select([self._server_socket], [], [], self.rtcm_timeout_seconds)
+    if not read_sockets and self._first_rtcm_received:
       self._logerr('RTCM data not received for {} seconds, reconnecting'.format(self.rtcm_timeout_seconds))
       self.reconnect()
       self._first_rtcm_received = False
-
-    # Check if there is any data available on the socket
-    read_sockets, _, _ = select.select([self._server_socket], [], [], 60)
-    if not read_sockets:
-      return []
 
     # Since we only ever pass the server socket to the list of read sockets, we can just read from that
     # Read all available data into a buffer
