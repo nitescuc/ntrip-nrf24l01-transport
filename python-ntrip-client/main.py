@@ -6,6 +6,10 @@ import pigpio
 from nrf24 import *
 from ntrip_client import NTRIPClient
 
+from dotenv import load_dotenv
+
+load_dotenv()  # take environment variables from .env.
+
 PIO_HOSTNAME = os.getenv('PIO_HOSTNAME', 'localhost')
 PIO_PORT = int(os.getenv('PIO_PORT', '8888'))
 ADDRESS = os.getenv('RF_ADDRESS', 'NTRIP')
